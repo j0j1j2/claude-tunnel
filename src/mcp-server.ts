@@ -4,7 +4,7 @@ import { createConnection, type Socket } from "node:net";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync, writeFileSync, unlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -15,6 +15,20 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BROKER_SCRIPT = join(HERE, "broker.ts");
+
+// Walk up from `start` looking for a .git directory. Returns the repo root or null.
+function findGitRoot(start: string): string | null {
+  let dir = resolve(start);
+  while (true) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+const SESSION_CWD = process.cwd();
+const SESSION_GIT_ROOT = findGitRoot(SESSION_CWD);
 
 type Pending = { resolve: (r: unknown) => void; reject: (e: Error) => void };
 
@@ -114,7 +128,7 @@ function asText(v: unknown): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] };
 }
 
-const server = new McpServer({ name: "claude-tunnel", version: "0.1.0" });
+const server = new McpServer({ name: "claude-tunnel", version: "0.2.0" });
 
 // The parent of this MCP server process is (typically) the Claude Code session.
 // We stamp a session marker file so the Stop hook can correlate session -> agent_id.
@@ -137,10 +151,16 @@ process.on("SIGINT", () => { clearSessionMarker(); process.exit(0); });
 process.on("SIGTERM", () => { clearSessionMarker(); process.exit(0); });
 
 server.registerTool("tunnel_register", {
-  description: "Register this Claude Code session as `agent_id`. Required before any other operation. The agent_id is how others address you. While registered, this session will be kept alive by the Stop hook (if installed) until tunnel_leave is called.",
+  description: "Register this Claude Code session as `agent_id`. Required before any other operation. The agent_id is how others address you. The broker also captures cwd / git_root / pid / ppid automatically so other agents can scope discovery (see tunnel_who). While registered, this session is kept alive by the Stop hook (if installed) until tunnel_leave is called.",
   inputSchema: { agent_id: z.string().min(1).describe("Unique identifier for this agent (e.g. 'planner', 'coder-1')") },
 }, async ({ agent_id }) => {
-  const r = await broker.call({ id: newId(), op: "register", agent_id });
+  const r = await broker.call({
+    id: newId(), op: "register", agent_id,
+    cwd: SESSION_CWD,
+    git_root: SESSION_GIT_ROOT,
+    pid: process.pid,
+    ppid: process.ppid,
+  });
   writeSessionMarker(agent_id);
   return asText(r);
 });
@@ -163,10 +183,12 @@ server.registerTool("tunnel_status", {
 });
 
 server.registerTool("tunnel_who", {
-  description: "List currently registered agent_ids.",
-  inputSchema: {},
-}, async () => {
-  const r = await broker.call({ id: newId(), op: "who" });
+  description: "List currently registered agents with their metadata (cwd, git_root, pid). Optionally filter by `scope`: 'machine' (default, all agents), 'directory' (same cwd as caller), 'repo' (same git_root as caller). Scoped queries require this session to be registered first.",
+  inputSchema: {
+    scope: z.enum(["machine", "directory", "repo"]).default("machine").optional(),
+  },
+}, async ({ scope }) => {
+  const r = await broker.call({ id: newId(), op: "who", scope: scope ?? "machine" });
   return asText(r);
 });
 

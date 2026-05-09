@@ -79,9 +79,14 @@ to stop until you say done. Without the hook, add `/loop 30s …` instead.
 ## Tools (12)
 
 Identity:
-- `tunnel_register(agent_id)` — claim an identity for this session
+- `tunnel_register(agent_id)` — claim an identity. Auto-captures the
+  session's `cwd`, `git_root`, `pid`, and `ppid` so other agents can
+  discover peers by repo or working directory.
 - `tunnel_leave()` — release this session (unregisters + clears inbox)
-- `tunnel_who()` — list currently registered agent_ids
+- `tunnel_who(scope?)` — list registered agents with full metadata.
+  `scope` is `"machine"` (default), `"directory"` (same cwd as caller),
+  or `"repo"` (same git_root as caller). Scoped queries require the
+  caller to be registered.
 - `tunnel_status(agent_id)` — pending message/request counts and subs
 
 Pub/Sub:
@@ -114,7 +119,9 @@ Claude Code B ─┘                                    └─ Unix socket ─> 
   auto-spawns a detached broker if the socket is dead.
 - **Broker** (`src/broker.ts`): single process. Holds in-memory state
   (registrations, subscriptions, inboxes, queues, pending requests).
-  Exits 60 s after the last client disconnects.
+  Exits 60 s after the last client disconnects. A reaper sweeps every
+  30 s, dropping agents whose pid has died and removing stale session
+  marker files.
 - **Stop hook** (`hooks/stop-block.ts`): runs on every Claude Code Stop
   event. If the current session has a session marker AND the agent has
   pending work or active subscriptions, returns
@@ -138,6 +145,7 @@ bun run bin/claude-tunnel.ts stop     # SIGTERM the broker
 bun run test/smoke.ts          # broker pub/sub, RPC, queue
 bun run test/mcp-handshake.ts  # MCP stdio + tools list + auto-spawn
 bun run test/hook.ts           # Stop hook block/allow scenarios
+bun run test/peers.ts          # peer metadata + scope filter + reaper
 ```
 
 The first run auto-spawns the broker. Subsequent runs reuse it.

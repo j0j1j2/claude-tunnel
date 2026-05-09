@@ -1,10 +1,12 @@
 import { createServer, createConnection, type Socket } from "node:net";
-import { mkdirSync, unlinkSync, writeFileSync, existsSync, openSync, closeSync, appendFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync, existsSync, openSync, closeSync, appendFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
-  TUNNEL_DIR, SOCK_PATH, PID_PATH, LOG_PATH, IDLE_SHUTDOWN_MS,
+  TUNNEL_DIR, SOCK_PATH, PID_PATH, LOG_PATH, SESSIONS_DIR,
+  IDLE_SHUTDOWN_MS, REAPER_INTERVAL_MS,
   encode, decode,
-  type ClientRequest, type ServerResponse, type InboxMessage, type AgentStatus,
+  type ClientRequest, type ServerResponse, type InboxMessage, type AgentStatus, type AgentMeta, type Scope,
 } from "./protocol.ts";
 
 type Conn = {
@@ -22,6 +24,7 @@ type PendingReply = { connId: string; reqId: string; timer: NodeJS.Timeout };
 
 const conns = new Map<string, Conn>();
 const agentIndex = new Map<string, string>(); // agent_id -> conn.id
+const agentMeta = new Map<string, AgentMeta>(); // agent_id -> metadata (cwd, git_root, pid, ppid)
 const inboxes = new Map<string, InboxMessage[]>(); // agent_id -> queued messages
 const channelSubs = new Map<string, Set<string>>(); // channel -> agent_ids
 const pendingReplies = new Map<string, PendingReply>(); // request_id -> waiting requester
@@ -29,6 +32,63 @@ const queues = new Map<string, unknown[]>(); // queue name -> jobs
 const queueWaiters = new Map<string, Array<{ connId: string; reqId: string; timer: NodeJS.Timeout }>>(); // FIFO
 
 let idleTimer: NodeJS.Timeout | null = null;
+let reaperTimer: NodeJS.Timeout | null = null;
+
+function pidAlive(pid: number | null | undefined): boolean {
+  if (!pid || pid <= 0) return true; // unknown -> assume alive
+  try { process.kill(pid, 0); return true; }
+  catch (e: any) {
+    // ESRCH = no such process; EPERM = process exists but we can't signal -> still alive
+    return e?.code === "EPERM";
+  }
+}
+
+function dropAgent(agentId: string, reason: string) {
+  const connId = agentIndex.get(agentId);
+  agentIndex.delete(agentId);
+  agentMeta.delete(agentId);
+  inboxes.delete(agentId);
+  for (const [ch, set] of channelSubs) {
+    if (set.delete(agentId) && set.size === 0) channelSubs.delete(ch);
+  }
+  if (connId) {
+    const conn = conns.get(connId);
+    if (conn && conn.agentId === agentId) {
+      conn.agentId = null;
+      conn.subs.clear();
+      // close the socket so the orphan client gives up; cleanup handler will
+      // also wipe queue/inbox waiters tied to this conn.
+      try { conn.socket.destroy(); } catch {}
+    }
+  }
+  log(`reaped agent="${agentId}" reason=${reason}`);
+}
+
+function reap() {
+  // 1. drop agents whose pid (or ppid) is dead
+  for (const [agentId, meta] of [...agentMeta]) {
+    if (meta.pid && !pidAlive(meta.pid)) { dropAgent(agentId, `pid ${meta.pid} dead`); continue; }
+    if (meta.ppid && !pidAlive(meta.ppid)) { dropAgent(agentId, `ppid ${meta.ppid} dead`); continue; }
+  }
+  // 2. clean stale session marker files (~/.claude-tunnel/sessions/<ppid>.agent)
+  try {
+    const entries = readdirSync(SESSIONS_DIR);
+    for (const name of entries) {
+      const m = /^(\d+)\.agent$/.exec(name);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      if (!pidAlive(pid)) {
+        try { unlinkSync(join(SESSIONS_DIR, name)); log(`reaped session file ${name}`); } catch {}
+      }
+    }
+  } catch { /* dir may not exist */ }
+}
+
+function startReaper() {
+  if (reaperTimer) return;
+  reaperTimer = setInterval(reap, REAPER_INTERVAL_MS);
+  reaperTimer.unref?.();
+}
 
 function log(line: string) {
   try { appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${line}\n`); } catch {}
@@ -91,6 +151,7 @@ function handle(conn: Conn, req: ClientRequest) {
       // unbind any prior agent on this conn
       if (conn.agentId && agentIndex.get(conn.agentId) === conn.id) {
         agentIndex.delete(conn.agentId);
+        agentMeta.delete(conn.agentId);
       }
       const prev = agentIndex.get(req.agent_id);
       if (prev && prev !== conn.id) {
@@ -100,7 +161,16 @@ function handle(conn: Conn, req: ClientRequest) {
       }
       conn.agentId = req.agent_id;
       agentIndex.set(req.agent_id, conn.id);
-      return ok(conn, req.id, { agent_id: req.agent_id });
+      const meta: AgentMeta = {
+        agent_id: req.agent_id,
+        cwd: req.cwd ?? null,
+        git_root: req.git_root ?? null,
+        pid: req.pid ?? null,
+        ppid: req.ppid ?? null,
+        registered_at: Date.now(),
+      };
+      agentMeta.set(req.agent_id, meta);
+      return ok(conn, req.id, meta);
     }
 
     case "unregister": {
@@ -115,8 +185,9 @@ function handle(conn: Conn, req: ClientRequest) {
         }
       }
       conn.subs.clear();
-      // drop pending inbox
+      // drop pending inbox + meta
       inboxes.delete(agentId);
+      agentMeta.delete(agentId);
       // remove from agent index
       if (agentIndex.get(agentId) === conn.id) agentIndex.delete(agentId);
       conn.agentId = null;
@@ -141,8 +212,20 @@ function handle(conn: Conn, req: ClientRequest) {
       return ok(conn, req.id, status);
     }
 
-    case "who":
-      return ok(conn, req.id, [...agentIndex.keys()]);
+    case "who": {
+      const scope: Scope = req.scope ?? "machine";
+      const all = [...agentIndex.keys()].map(id => agentMeta.get(id)).filter((m): m is AgentMeta => !!m);
+      if (scope === "machine") return ok(conn, req.id, all);
+      // scoped: needs caller's own meta
+      const callerMeta = conn.agentId ? agentMeta.get(conn.agentId) : null;
+      if (!callerMeta) return err(conn, req.id, `must register before scoped who (scope=${scope})`);
+      const filtered = all.filter(m => {
+        if (scope === "directory") return m.cwd && callerMeta.cwd && m.cwd === callerMeta.cwd;
+        if (scope === "repo") return m.git_root && callerMeta.git_root && m.git_root === callerMeta.git_root;
+        return true;
+      });
+      return ok(conn, req.id, filtered);
+    }
 
     case "publish": {
       if (!conn.agentId) return err(conn, req.id, "must register before publishing");
@@ -310,6 +393,7 @@ function onConnection(socket: Socket) {
     conns.delete(conn.id);
     if (conn.agentId && agentIndex.get(conn.agentId) === conn.id) {
       agentIndex.delete(conn.agentId);
+      agentMeta.delete(conn.agentId);
     }
     for (const ch of conn.subs) {
       const s = channelSubs.get(ch);
@@ -365,6 +449,8 @@ async function main() {
     writeFileSync(PID_PATH, String(process.pid));
     log(`listening pid=${process.pid} sock=${SOCK_PATH}`);
     startIdleTimer(); // starts with no clients
+    startReaper();   // periodic dead-pid + stale-session-file cleanup
+    reap();          // immediate sweep on startup
   });
 
   const shutdown = (sig: string) => {

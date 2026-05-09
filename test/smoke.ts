@@ -49,8 +49,9 @@ await A.connect(); await B.connect();
 await A.call({ op: "register", agent_id: "alpha" });
 await B.call({ op: "register", agent_id: "beta" });
 
-const who = await A.call({ op: "who" }) as string[];
-ok("who lists both", who.includes("alpha") && who.includes("beta"), who);
+const who = await A.call({ op: "who" }) as Array<{ agent_id: string }>;
+const ids = who.map(w => w.agent_id);
+ok("who lists both", ids.includes("alpha") && ids.includes("beta"), ids);
 
 // pub/sub
 await B.call({ op: "subscribe", channel: "news" });

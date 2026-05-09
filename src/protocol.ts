@@ -8,6 +8,18 @@ export const LOG_PATH = join(TUNNEL_DIR, "broker.log");
 export const SESSIONS_DIR = join(TUNNEL_DIR, "sessions");
 
 export const IDLE_SHUTDOWN_MS = 60_000;
+export const REAPER_INTERVAL_MS = 30_000;
+
+export type Scope = "machine" | "directory" | "repo";
+
+export type AgentMeta = {
+  agent_id: string;
+  cwd: string | null;
+  git_root: string | null;
+  pid: number | null;       // MCP server process pid
+  ppid: number | null;      // parent pid (Claude Code session)
+  registered_at: number;
+};
 
 export type AgentStatus = {
   registered: boolean;
@@ -21,10 +33,10 @@ export type InboxMessage =
   | { type: "request"; request_id: string; from?: string; payload: unknown; ts: number };
 
 export type ClientRequest =
-  | { id: string; op: "register"; agent_id: string }
+  | { id: string; op: "register"; agent_id: string; cwd?: string | null; git_root?: string | null; pid?: number | null; ppid?: number | null }
   | { id: string; op: "unregister" }
   | { id: string; op: "agent_status"; agent_id: string }
-  | { id: string; op: "who" }
+  | { id: string; op: "who"; scope?: Scope }
   | { id: string; op: "publish"; channel: string; payload: unknown }
   | { id: string; op: "subscribe"; channel: string }
   | { id: string; op: "unsubscribe"; channel: string }

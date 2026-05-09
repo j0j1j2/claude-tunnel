@@ -58,7 +58,7 @@ notify("notifications/initialized", {});
 
 const tools = await send("tools/list", {});
 const names = (tools.result.tools as any[]).map(t => t.name).sort();
-ok("tools list contains all 12", names.length === 12, names);
+ok("tools list contains all 12 (incl. tunnel_status, tunnel_leave)", names.length === 12, names);
 
 const reg = await send("tools/call", { name: "tunnel_register", arguments: { agent_id: "smoke-mcp" } });
 ok("register via MCP (auto-spawn broker)", JSON.stringify(reg).includes("smoke-mcp"), reg.result?.content);
