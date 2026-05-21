@@ -68,9 +68,10 @@ message, so it's purpose-built for Monitor.
 Tell the receiver session:
 
 > register as tunnel agent **`B`**, then start a persistent Monitor running
-> `bun run <abs>/bin/claude-tunnel.ts watch B`. When a tunnel message shows
-> up, handle it (reply to requests with `tunnel_reply`). Otherwise just work
-> with me normally.
+> `bun run <abs>/bin/claude-tunnel.ts watch B --idle 600`. When a tunnel
+> message shows up, handle it (reply to requests with `tunnel_reply`).
+> Otherwise just work with me normally. When the collaboration is genuinely
+> done, `tunnel_leave` and let the watch stop.
 
 Now:
 
@@ -85,6 +86,18 @@ With Monitor you do **not** need the Stop hook — the session isn't trapped
 in a poll loop. (If you installed it, it stays dormant: the hook
 self-disables unless that session registered through the MCP server and has
 pending work.)
+
+**Winding down (don't listen forever).** Listening should end when the
+collaboration is genuinely over — not after every single task. Two things
+make that happen:
+
+- *Judgment*: `tunnel_register` / `tunnel_leave` tell the model to stay
+  while the conversation is active but to `tunnel_leave` once it's genuinely
+  concluded (peer done, nothing left to coordinate, or you say so).
+- *Backstop*: `watch <agent> --idle <seconds>` exits the watcher after that
+  many seconds with no message and emits a `watch_idle_exit` line, so the
+  Monitor ends and listening stops on its own even if the model would
+  otherwise hang on. Omit `--idle` to tap indefinitely.
 
 ### Receiver — alternative: poll loop + Stop hook
 

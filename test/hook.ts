@@ -91,10 +91,10 @@ const hookB = await runHookForPid(myPid, sessionFile, myAgent);
 ok("hook blocks: pending messages",
    hookB.stdout.includes('"decision":"block"') && hookB.stdout.includes("waiting for you"),
    hookB.stdout.slice(0, 200));
-ok("block reason discourages tunnel_leave",
-   /do NOT call tunnel_leave/i.test(hookB.stdout)
-   && !/then call tunnel_leave/i.test(hookB.stdout)
-   && !/or call tunnel_leave if you are done/i.test(hookB.stdout),
+ok("pending-message block says handle, not leave",
+   /tunnel_inbox/.test(hookB.stdout)
+   && /tunnel_reply/.test(hookB.stdout)
+   && !/tunnel_leave/i.test(hookB.stdout),
    hookB.stdout.slice(0, 280));
 
 // scenario 3: drain inbox + unregister → hook should ALLOW

@@ -128,7 +128,7 @@ function asText(v: unknown): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] };
 }
 
-const server = new McpServer({ name: "claude-tunnel", version: "0.3.0" });
+const server = new McpServer({ name: "claude-tunnel", version: "0.4.0" });
 
 // The parent of this MCP server process is (typically) the Claude Code session.
 // We stamp a session marker file so the Stop hook can correlate session -> agent_id.
@@ -151,7 +151,7 @@ process.on("SIGINT", () => { clearSessionMarker(); process.exit(0); });
 process.on("SIGTERM", () => { clearSessionMarker(); process.exit(0); });
 
 server.registerTool("tunnel_register", {
-  description: "Register this Claude Code session as `agent_id`. Required before any other operation. The agent_id is how others address you. The broker also captures cwd / git_root / pid / ppid automatically so other agents can scope discovery (see tunnel_who). IMPORTANT: once registered you are a PERSISTENT LISTENER — keep calling tunnel_inbox in a loop to receive messages, and treat staying connected as your standing job. Do NOT call tunnel_leave just because the current task is finished; only leave when the user explicitly tells you to disconnect.",
+  description: "Register this Claude Code session as `agent_id`. Required before any other operation. The agent_id is how others address you. The broker also captures cwd / git_root / pid / ppid automatically so other agents can scope discovery (see tunnel_who). Once registered, stay connected and listening while the collaboration is active — do NOT leave just because one task or message-exchange finished, since more messages are usually coming. But when the collaboration is genuinely complete (the peer is done, there is nothing left to coordinate, or the user says so), call tunnel_leave to wind down rather than listening forever.",
   inputSchema: { agent_id: z.string().min(1).describe("Unique identifier for this agent (e.g. 'planner', 'coder-1')") },
 }, async ({ agent_id }) => {
   const r = await broker.call({
@@ -168,7 +168,7 @@ server.registerTool("tunnel_register", {
 const LEAVE_LOCKED = process.env.CLAUDE_TUNNEL_LOCK === "1" || process.env.CLAUDE_TUNNEL_LOCK === "true";
 
 server.registerTool("tunnel_leave", {
-  description: "Disconnect this session from the tunnel (clears subscriptions + pending inbox and releases the Stop hook). ONLY call this when the user has EXPLICITLY told you, in their most recent instruction, to stop / disconnect / leave the tunnel. Finishing the current task is NOT a reason to leave — more messages may still arrive, so the default is to stay registered and keep polling tunnel_inbox. Never call this on your own initiative.",
+  description: "Disconnect this session from the tunnel (clears subscriptions + pending inbox and releases the Stop hook). Call this when the COLLABORATION is genuinely finished — the peer signalled they are done, both sides have wrapped up, there is nothing left to coordinate, or the user told you to disconnect. Judge at the collaboration level, not the task level: 'this one reply is sent' is NOT a reason to leave while the exchange is still ongoing and more messages are plausibly coming. But once the conversation has genuinely concluded, it is correct to leave (and stop any `watch` Monitor) instead of listening forever.",
   inputSchema: {},
 }, async () => {
   if (LEAVE_LOCKED) {

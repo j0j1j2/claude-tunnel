@@ -58,10 +58,25 @@ async function connectSpawning(): Promise<Socket> {
   throw new Error("could not connect to claude-tunnel broker");
 }
 
-// `watch <agent_id>`: tap the agent's delivery stream and print one JSON line
-// per incoming message to stdout. Designed to be run under Claude Code's Monitor
-// tool so messages surface as chat notifications. Reconnects on broker restart.
-async function watch(agentId: string): Promise<never> {
+// `watch <agent_id> [--idle <seconds>]`: tap the agent's delivery stream and
+// print one JSON line per incoming message to stdout. Designed to run under
+// Claude Code's Monitor so messages surface as chat notifications. Reconnects
+// on broker restart. With --idle, the watcher exits after that many seconds
+// with no message — a structural backstop so listening winds down on its own
+// when the collaboration goes quiet, rather than tapping forever.
+async function watch(agentId: string, idleMs: number): Promise<never> {
+  let lastMsg = Date.now();
+  if (idleMs > 0) {
+    const check = setInterval(() => {
+      if (Date.now() - lastMsg >= idleMs) {
+        process.stderr.write(`[watch] idle ${Math.round(idleMs / 1000)}s with no messages; stopping watch for "${agentId}"\n`);
+        process.stdout.write(JSON.stringify({ type: "watch_idle_exit", agent_id: agentId, idle_seconds: Math.round(idleMs / 1000) }) + "\n");
+        process.exit(0);
+      }
+    }, 1000);
+    check.unref?.();
+  }
+
   let backoff = 200;
   for (;;) {
     let sock: Socket;
@@ -77,12 +92,14 @@ async function watch(agentId: string): Promise<never> {
       sock.on("data", (chunk: string) => {
         for (const obj of decode(buf, chunk)) {
           if (isEvent(obj)) {
+            lastMsg = Date.now();
             // one compact line per message -> one Monitor notification
             process.stdout.write(JSON.stringify(obj.message) + "\n");
           } else {
             const r = obj as ServerResponse;
             if (r && (r as any).id === "tap" && r.ok) {
-              process.stderr.write(`[watch] tapping "${agentId}" via ${SOCK_PATH}\n`);
+              const idleNote = idleMs > 0 ? `, idle-exit after ${Math.round(idleMs / 1000)}s` : "";
+              process.stderr.write(`[watch] tapping "${agentId}" via ${SOCK_PATH}${idleNote}\n`);
             }
           }
         }
@@ -130,8 +147,15 @@ switch (cmd) {
   }
   case "watch": {
     const agentId = process.argv[3];
-    if (!agentId) { console.error("usage: claude-tunnel watch <agent_id>"); process.exit(2); }
-    await watch(agentId); // never returns
+    if (!agentId || agentId.startsWith("--")) { console.error("usage: claude-tunnel watch <agent_id> [--idle <seconds>]"); process.exit(2); }
+    const idleFlag = process.argv.indexOf("--idle");
+    let idleMs = 0;
+    if (idleFlag !== -1) {
+      const sec = Number(process.argv[idleFlag + 1]);
+      if (!Number.isFinite(sec) || sec < 0) { console.error("--idle expects a non-negative number of seconds"); process.exit(2); }
+      idleMs = sec * 1000;
+    }
+    await watch(agentId, idleMs); // never returns (unless idle-exit)
     break;
   }
   default:
@@ -140,8 +164,10 @@ switch (cmd) {
   status          show broker state
   stop            terminate the broker (SIGTERM)
   logs            dump broker log
-  watch <agent>   stream messages for <agent> to stdout (one JSON line each);
-                  run under Claude Code's Monitor for push-style delivery
+  watch <agent> [--idle <seconds>]
+                  stream messages for <agent> to stdout (one JSON line each);
+                  run under Claude Code's Monitor for push-style delivery.
+                  --idle N exits after N seconds with no message (wind-down).
 
 paths:
   ${SOCK_PATH}

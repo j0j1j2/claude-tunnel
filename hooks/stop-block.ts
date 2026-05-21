@@ -63,17 +63,15 @@ sock.on("data", (chunk: string) => {
     if (total > 0) {
       return block(
         `claude-tunnel: you are agent "${agentId}" and ${s.messages_pending} message(s) + ${s.requests_pending} request(s) are waiting for you. ` +
-        `Call tunnel_inbox(wait_seconds=25) now to receive them, and tunnel_reply to answer any requests. ` +
-        `Then keep looping on tunnel_inbox. Do NOT call tunnel_leave — staying connected is your job here. ` +
-        `Only the user can end this, by explicitly telling you to disconnect.`
+        `Call tunnel_inbox(wait_seconds=25) now to receive them, and tunnel_reply to answer any requests before stopping. ` +
+        `Don't drop unread messages on the floor.`
       );
     }
     if (s.subscriptions > 0 || s.registered) {
       return block(
-        `claude-tunnel: you are agent "${agentId}", still registered and on listening duty (${s.subscriptions} subscription(s)). ` +
-        `Call tunnel_inbox(wait_seconds=25) to wait for the next message, then loop again. ` +
-        `Finishing the previous task does NOT mean you are done — more messages may arrive. ` +
-        `Do NOT call tunnel_leave on your own; only leave if the user explicitly tells you to disconnect from the tunnel.`
+        `claude-tunnel: you are agent "${agentId}", still registered and listening (${s.subscriptions} subscription(s)), with an empty inbox right now. ` +
+        `If the collaboration is still active, call tunnel_inbox(wait_seconds=25) to wait for the next message — finishing one task does NOT mean the conversation is over. ` +
+        `If the collaboration is genuinely complete (the peer is done, nothing left to coordinate, or the user said so), call tunnel_leave to wind down, then stop.`
       );
     }
     allow();
