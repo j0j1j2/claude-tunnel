@@ -62,16 +62,18 @@ sock.on("data", (chunk: string) => {
     const total = s.messages_pending + s.requests_pending;
     if (total > 0) {
       return block(
-        `claude-tunnel: agent "${agentId}" still has ${s.messages_pending} pending message(s) and ${s.requests_pending} pending request(s). ` +
-        `Call tunnel_inbox(wait_seconds=25) to receive them, reply via tunnel_reply when needed, ` +
-        `then call tunnel_leave to release this session.`
+        `claude-tunnel: you are agent "${agentId}" and ${s.messages_pending} message(s) + ${s.requests_pending} request(s) are waiting for you. ` +
+        `Call tunnel_inbox(wait_seconds=25) now to receive them, and tunnel_reply to answer any requests. ` +
+        `Then keep looping on tunnel_inbox. Do NOT call tunnel_leave — staying connected is your job here. ` +
+        `Only the user can end this, by explicitly telling you to disconnect.`
       );
     }
     if (s.subscriptions > 0 || s.registered) {
       return block(
-        `claude-tunnel: agent "${agentId}" is still registered with ${s.subscriptions} active subscription(s). ` +
-        `Call tunnel_inbox(wait_seconds=25) to wait for the next message, ` +
-        `or call tunnel_leave if you are done participating.`
+        `claude-tunnel: you are agent "${agentId}", still registered and on listening duty (${s.subscriptions} subscription(s)). ` +
+        `Call tunnel_inbox(wait_seconds=25) to wait for the next message, then loop again. ` +
+        `Finishing the previous task does NOT mean you are done — more messages may arrive. ` +
+        `Do NOT call tunnel_leave on your own; only leave if the user explicitly tells you to disconnect from the tunnel.`
       );
     }
     allow();

@@ -151,7 +151,7 @@ process.on("SIGINT", () => { clearSessionMarker(); process.exit(0); });
 process.on("SIGTERM", () => { clearSessionMarker(); process.exit(0); });
 
 server.registerTool("tunnel_register", {
-  description: "Register this Claude Code session as `agent_id`. Required before any other operation. The agent_id is how others address you. The broker also captures cwd / git_root / pid / ppid automatically so other agents can scope discovery (see tunnel_who). While registered, this session is kept alive by the Stop hook (if installed) until tunnel_leave is called.",
+  description: "Register this Claude Code session as `agent_id`. Required before any other operation. The agent_id is how others address you. The broker also captures cwd / git_root / pid / ppid automatically so other agents can scope discovery (see tunnel_who). IMPORTANT: once registered you are a PERSISTENT LISTENER — keep calling tunnel_inbox in a loop to receive messages, and treat staying connected as your standing job. Do NOT call tunnel_leave just because the current task is finished; only leave when the user explicitly tells you to disconnect.",
   inputSchema: { agent_id: z.string().min(1).describe("Unique identifier for this agent (e.g. 'planner', 'coder-1')") },
 }, async ({ agent_id }) => {
   const r = await broker.call({
@@ -165,10 +165,19 @@ server.registerTool("tunnel_register", {
   return asText(r);
 });
 
+const LEAVE_LOCKED = process.env.CLAUDE_TUNNEL_LOCK === "1" || process.env.CLAUDE_TUNNEL_LOCK === "true";
+
 server.registerTool("tunnel_leave", {
-  description: "Deregister this session from the tunnel: clears subscriptions, drops pending inbox, and releases the Stop hook so the session can end normally. Call when this agent is done participating.",
+  description: "Disconnect this session from the tunnel (clears subscriptions + pending inbox and releases the Stop hook). ONLY call this when the user has EXPLICITLY told you, in their most recent instruction, to stop / disconnect / leave the tunnel. Finishing the current task is NOT a reason to leave — more messages may still arrive, so the default is to stay registered and keep polling tunnel_inbox. Never call this on your own initiative.",
   inputSchema: {},
 }, async () => {
+  if (LEAVE_LOCKED) {
+    return asText({
+      left: false,
+      locked: true,
+      message: "tunnel_leave is disabled because CLAUDE_TUNNEL_LOCK is set. This session must stay connected. Resume listening with tunnel_inbox. To actually disconnect, the user must unset CLAUDE_TUNNEL_LOCK and restart, or close this session.",
+    });
+  }
   const r = await broker.call({ id: newId(), op: "unregister" });
   clearSessionMarker();
   return asText(r);

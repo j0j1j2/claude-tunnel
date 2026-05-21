@@ -62,11 +62,27 @@ guide the rest.
 Tell the model to identify itself and start listening:
 
 > register as tunnel agent **`coder`**, subscribe to channel **`tasks`**,
-> then loop on `tunnel_inbox` to handle anything that comes in. Call
-> `tunnel_leave` when I tell you we're done.
+> then loop on `tunnel_inbox` to handle anything that comes in. Stay
+> connected — only `tunnel_leave` when I explicitly tell you to.
 
 With the Stop hook installed, the receiver session will not be allowed
-to stop until you say done. Without the hook, add `/loop 30s …` instead.
+to stop while it is registered or has pending messages. Without the
+hook, add `/loop 30s …` instead.
+
+**Keeping flighty agents from leaving.** A registered session is meant
+to be a persistent listener. The tool descriptions and the Stop hook
+both tell the model not to `tunnel_leave` on its own — only when the
+user explicitly asks to disconnect. If a model still tries to bail too
+eagerly, hard-lock it:
+
+```sh
+# add the env var to the MCP registration so leave is refused outright
+claude mcp add tunnel -s user -e CLAUDE_TUNNEL_LOCK=1 -- bun run <abs>/src/mcp-server.ts
+```
+
+With `CLAUDE_TUNNEL_LOCK=1`, `tunnel_leave` becomes a no-op that tells
+the model to stay connected. To actually disconnect, unset the var
+(re-register) or just close the session.
 
 ### Sender
 
