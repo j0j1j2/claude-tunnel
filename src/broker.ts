@@ -15,6 +15,7 @@ type Conn = {
   buf: { current: string };
   agentId: string | null;
   subs: Set<string>;
+  taps: Set<string>; // agent_ids this connection is tapping (read stream)
   // long-poll waiters tied to this connection
   inboxWaiter: { reqId: string; max: number; timer: NodeJS.Timeout } | null;
   dequeueWaiters: Map<string /*reqId*/, { queue: string; timer: NodeJS.Timeout }>;
@@ -27,6 +28,7 @@ const agentIndex = new Map<string, string>(); // agent_id -> conn.id
 const agentMeta = new Map<string, AgentMeta>(); // agent_id -> metadata (cwd, git_root, pid, ppid)
 const inboxes = new Map<string, InboxMessage[]>(); // agent_id -> queued messages
 const channelSubs = new Map<string, Set<string>>(); // channel -> agent_ids
+const taps = new Map<string, Set<string>>(); // agent_id -> conn.ids tapping its stream
 const pendingReplies = new Map<string, PendingReply>(); // request_id -> waiting requester
 const queues = new Map<string, unknown[]>(); // queue name -> jobs
 const queueWaiters = new Map<string, Array<{ connId: string; reqId: string; timer: NodeJS.Timeout }>>(); // FIFO
@@ -113,6 +115,19 @@ function getInbox(agentId: string): InboxMessage[] {
 }
 
 function deliverToAgent(agentId: string, msg: InboxMessage) {
+  // If the agent has an active tap (e.g. a `claude-tunnel watch` feeding a
+  // Monitor), stream the message straight to the tap(s) and skip inbox
+  // buffering — the tap is the live consumer, so nothing accumulates.
+  const tapSet = taps.get(agentId);
+  if (tapSet && tapSet.size > 0) {
+    let streamed = false;
+    for (const cid of tapSet) {
+      const c = conns.get(cid);
+      if (c) { try { c.socket.write(encode({ event: "message", agent_id: agentId, message: msg })); streamed = true; } catch {} }
+    }
+    if (streamed) return;
+    // all tap conns vanished; fall through to inbox buffering
+  }
   const q = getInbox(agentId);
   q.push(msg);
   // wake any inbox waiter for this agent
@@ -146,6 +161,14 @@ function cancelIdleTimer() {
 function handle(conn: Conn, req: ClientRequest) {
   switch (req.op) {
     case "ping": return ok(conn, req.id, "pong");
+
+    case "tap": {
+      conn.taps.add(req.agent_id);
+      let set = taps.get(req.agent_id);
+      if (!set) { set = new Set(); taps.set(req.agent_id, set); }
+      set.add(conn.id);
+      return ok(conn, req.id, { tapping: req.agent_id });
+    }
 
     case "register": {
       // unbind any prior agent on this conn
@@ -373,6 +396,7 @@ function onConnection(socket: Socket) {
     buf: { current: "" },
     agentId: null,
     subs: new Set(),
+    taps: new Set(),
     inboxWaiter: null,
     dequeueWaiters: new Map(),
   };
@@ -401,6 +425,10 @@ function onConnection(socket: Socket) {
         s.delete(conn.agentId);
         if (s.size === 0) channelSubs.delete(ch);
       }
+    }
+    for (const agentId of conn.taps) {
+      const set = taps.get(agentId);
+      if (set) { set.delete(conn.id); if (set.size === 0) taps.delete(agentId); }
     }
     if (conn.inboxWaiter) clearTimeout(conn.inboxWaiter.timer);
     for (const [reqId, dw] of conn.dequeueWaiters) {

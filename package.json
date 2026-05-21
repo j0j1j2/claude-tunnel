@@ -1,6 +1,6 @@
 {
   "name": "claude-tunnel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
   "bin": {
@@ -14,7 +14,10 @@
     "cli": "bun run bin/claude-tunnel.ts",
     "test:smoke": "bun run test/smoke.ts",
     "test:mcp": "bun run test/mcp-handshake.ts",
-    "test:hook": "bun run test/hook.ts"
+    "test:hook": "bun run test/hook.ts",
+    "test:peers": "bun run test/peers.ts",
+    "test:watch": "bun run test/watch.ts",
+    "test:leave-lock": "bun run test/leave-lock.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0"

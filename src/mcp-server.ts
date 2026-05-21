@@ -128,7 +128,7 @@ function asText(v: unknown): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] };
 }
 
-const server = new McpServer({ name: "claude-tunnel", version: "0.2.0" });
+const server = new McpServer({ name: "claude-tunnel", version: "0.3.0" });
 
 // The parent of this MCP server process is (typically) the Claude Code session.
 // We stamp a session marker file so the Stop hook can correlate session -> agent_id.

@@ -45,11 +45,20 @@ export type ClientRequest =
   | { id: string; op: "reply"; request_id: string; payload: unknown }
   | { id: string; op: "enqueue"; queue: string; payload: unknown }
   | { id: string; op: "dequeue"; queue: string; wait_ms: number }
+  | { id: string; op: "tap"; agent_id: string }
   | { id: string; op: "ping" };
 
 export type ServerResponse =
   | { id: string; ok: true; result: unknown }
   | { id: string; ok: false; error: string };
+
+// Server-initiated push (no request id). Sent to connections that have tapped
+// an agent — one event per message delivered to that agent.
+export type ServerEvent = { event: "message"; agent_id: string; message: InboxMessage };
+
+export function isEvent(o: unknown): o is ServerEvent {
+  return !!o && typeof o === "object" && (o as any).event === "message";
+}
 
 export function encode(obj: unknown): string {
   return JSON.stringify(obj) + "\n";
